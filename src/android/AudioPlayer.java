@@ -458,8 +458,7 @@ public class AudioPlayer implements OnCompletionListener, OnPreparedListener, On
 
         // Can't get duration of recording
         if (this.recorder != null) {
-            return this.recorder.getMetrics();
-            // return (-2); // not allowed
+            return (-2); // not allowed
         }
 
         // If audio file already loaded and started, then return duration
