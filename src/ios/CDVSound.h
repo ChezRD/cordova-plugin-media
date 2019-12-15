@@ -57,8 +57,10 @@ typedef NSUInteger CDVMediaMsg;
 @interface CDVAudioRecorder : AVAudioRecorder
 {
     NSString* mediaId;
+    NSTimer* recordTimer;
 }
 @property (nonatomic, copy) NSString* mediaId;
+@property (nonatomic, retain) NSTimer* recordTimer;
 @end
 
 @interface CDVAudioFile : NSObject

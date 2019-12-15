@@ -27,6 +27,7 @@
 
 @implementation CDVSound
 
+
 BOOL keepAvAudioSessionAlwaysActive = NO;
 
 @synthesize soundCache, avSession, currMediaId, statusCallbackId;
@@ -677,42 +678,163 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
             // get the audioSession and set the category to allow recording when device is locked or ring/silent switch engaged
             if ([weakSelf hasAudioSession]) {
                 if (![weakSelf.avSession.category isEqualToString:AVAudioSessionCategoryPlayAndRecord]) {
-                    [weakSelf.avSession setCategory:AVAudioSessionCategoryRecord error:nil];
+                    NSError *error;
+                    //AVAudioSessionCategoryRecord
+                    [weakSelf.avSession setCategory:AVAudioSessionCategoryMultiRoute error:&error];
+                    if (error != nil){
+                       NSLog(@"Error setting category: %@", error);
+                    }
+                    [weakSelf.avSession setMode:AVAudioSessionModeVoiceChat error:nil];
                 }
 
-                if (![weakSelf.avSession setActive:YES error:&error]) {
+                if (![weakSelf.avSession
+                      setActive:YES
+                      withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+                      error:&error]) {
                     // other audio with higher priority that does not allow mixing could cause this to fail
                     errorMsg = [NSString stringWithFormat:@"Unable to record audio: %@", [error localizedFailureReason]];
                     [weakSelf onStatus:MEDIA_ERROR mediaId:mediaId param:
                            [self createAbortError:errorMsg]];
                     return;
                 }
+            } else {
+                [weakSelf.avSession setCategory:AVAudioSessionCategoryRecord error:nil];
             }
+            
+            NSString *str = nil;
+            
+            // Get the set of available inputs. If there are no audio accessories attached, there will be
+            // only one available input -- the built in microphone
+            NSArray* inputs = [weakSelf.avSession availableInputs];
+            str = [NSString stringWithFormat:@"\n--- Ports available on %@: %iu ---", [UIDevice currentDevice].name , [inputs count]];
+            NSLog(@"%@",str);
+
+            // Locate the Port corresponding to the built-in microphone.
+            AVAudioSessionPortDescription* builtInMicPort = nil;
+            AVAudioSessionDataSourceDescription* frontDataSource = nil;
+
+            for (AVAudioSessionPortDescription* port in inputs)
+            {
+                // Print out a description of the data sources for the built-in microphone
+                str = @"\n**********";
+                NSLog(@"%@",str);
+                str = [NSString stringWithFormat:@"Port :\"%@\": UID:%@", port.portName, port.UID ];
+                NSLog(@"%@",str);
+                if( [port.dataSources count] ){
+                    str = [NSString stringWithFormat:@"Port has %d data sources",(unsigned)[port.dataSources count] ];
+                    NSLog(@"%@",str);
+                }
+
+                str = [NSString stringWithFormat:@">%@", port.dataSources];
+                NSLog(@"%@",str);
+
+                if( [port.portType isEqualToString:AVAudioSessionPortLineIn] ){
+                    str = @"Line Input found";
+                    NSLog(@"%@",str);
+                }
+                else if( [port.portType isEqualToString:AVAudioSessionPortUSBAudio] ){
+                    str = @"USB Audio found";
+                    NSLog(@"%@",str);
+                }
+                else if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic]){
+                    builtInMicPort = port;
+                    str = @"Built-in Mic found";
+                    NSLog(@"%@",str);
+                }
+                else if ([port.portType isEqualToString:AVAudioSessionPortHeadsetMic]){
+                    builtInMicPort = port;
+                    str = @"Headset Mic found";
+                    NSLog(@"%@",str);
+                }
+                else{
+                    str = @"Other input source found";
+                    NSLog(@"%@",str);
+                }
+
+                // loop over the built-in mic's data sources and attempt to locate the front microphone
+                for (AVAudioSessionDataSourceDescription* source in port.dataSources)
+                {
+                    str = [NSString stringWithFormat:@"\nName:%@ (%d) \nPolar:%@ \nType:%@ \nPatterns:%@", source.dataSourceName, [source.dataSourceID intValue], source.selectedPolarPattern, port.portType, source.supportedPolarPatterns];
+                    NSLog(@"%@",str);
+
+                   if ([source.orientation isEqual:AVAudioSessionOrientationFront])
+                   {
+                       frontDataSource = source;
+                       break;
+                   }
+                }
+
+            }
+
+            str = @"\n----  Current Selected Ports ----\n";
+            NSLog(@"%@",str);
+
+            NSArray *currentInputs = weakSelf.avSession.currentRoute.inputs;
+            for( AVAudioSessionPortDescription *port in currentInputs ){
+                str = [NSString stringWithFormat:@"\nInput Port :\"%@\":", port.portName ];
+                NSLog(@"%@",str);
+                if( [port.dataSources count] ){
+                    str = [NSString stringWithFormat:@"Port has %d data sources",(unsigned)[port.dataSources count] ];
+                    NSLog(@"%@",str);
+
+                    str = [NSString stringWithFormat:@"Selected data source:%@",  port.selectedDataSource.dataSourceName];
+                    NSLog(@"%@",str);
+
+                    if( [port.selectedDataSource.supportedPolarPatterns count] > 0 ){
+                        str = [NSString stringWithFormat:@"Selected polar pattern:%@", port.selectedDataSource.selectedPolarPattern];
+                        NSLog(@"%@",str);
+                    }
+                }
+            }
+            
+            [weakSelf.avSession setPreferredInput:builtInMicPort error:nil];
+            [weakSelf.avSession setInputDataSource:frontDataSource error:nil];
+            
+            if( weakSelf.avSession.preferredInput.portName ){
+                str = [NSString stringWithFormat:@"\nPreferred Port: %@ Source:%@\n", weakSelf.avSession.preferredInput.portName, weakSelf.avSession.preferredInput.selectedDataSource.dataSourceName];
+            } else {
+                str = @"\nNo Preferred Port set";
+            }
+            NSLog(@"%@",str);
+            
+            [weakSelf.avSession setInputGain:1.0 error:nil];
 
             // create a new recorder for each start record
             bool isWav=[[audioFile.resourcePath pathExtension] isEqualToString:@"wav"];
-            NSMutableDictionary *audioSettings = [NSMutableDictionary dictionaryWithDictionary:
-                                            @{AVSampleRateKey: @(44100),
-                                             AVNumberOfChannelsKey: @(1),
-                                             }];
+            NSMutableDictionary *audioSettings = [
+                  NSMutableDictionary dictionaryWithDictionary: @{
+                    AVSampleRateKey: @(44100),
+                    AVEncoderBitRateKey: @(32000),
+                    AVNumberOfChannelsKey: @(1),
+                  }];
             if (isWav)  {
                 audioSettings[AVFormatIDKey]=@(kAudioFormatLinearPCM);
                 audioSettings[AVLinearPCMBitDepthKey]=@(16);
-                audioSettings[AVLinearPCMIsBigEndianKey]=@(false);
-                audioSettings[AVLinearPCMIsFloatKey]=@(false);
+                audioSettings[AVLinearPCMIsBigEndianKey]=@(NO);
+                audioSettings[AVLinearPCMIsFloatKey]=@(NO);
+                audioSettings[AVEncoderAudioQualityKey]=@(AVAudioQualityMedium);
             } else {
                 audioSettings[AVFormatIDKey]=@(kAudioFormatMPEG4AAC);
                 audioSettings[AVEncoderAudioQualityKey]=@(AVAudioQualityMedium);
             }
             audioFile.recorder = [[CDVAudioRecorder alloc] initWithURL:audioFile.resourceURL settings:audioSettings error:&error];
-
+            
+            
             bool recordingSuccess = NO;
             if (error == nil) {
                 audioFile.recorder.delegate = weakSelf;
                 audioFile.recorder.mediaId = mediaId;
                 audioFile.recorder.meteringEnabled = YES;
+                [audioFile.recorder prepareToRecord];
                 recordingSuccess = [audioFile.recorder record];
+                
                 if (recordingSuccess) {
+                    audioFile.recorder.recordTimer = [NSTimer scheduledTimerWithTimeInterval:.2
+                       target:self
+                       selector:@selector(updateRecordTimer:)
+                       userInfo:nil
+                       repeats:YES
+                    ];
                     NSLog(@"Started recording audio sample '%@'", audioFile.resourcePath);
                     [weakSelf onStatus:MEDIA_STATE mediaId:mediaId param:@(MEDIA_RUNNING)];
                 }
@@ -764,7 +886,20 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
           [self createAbortError:errorMsg]];
     }
 }
-
+- (void)updateRecordTimer:(NSTimer*)timer{
+    for(NSString* mediaId in soundCache) {
+        CDVAudioFile* audioFile = [soundCache objectForKey:mediaId];
+        if (audioFile.recorder && [audioFile.recorder isRecording]) {
+            [self onStatus:MEDIA_DURATION
+                mediaId:mediaId
+                param:@(round([audioFile.recorder currentTime] * 1000) / 1000)
+            ];
+            return;
+        }
+    }
+    
+    [timer invalidate];
+}
 - (void)stopRecordingAudio:(CDVInvokedUrlCommand*)command
 {
     NSString* mediaId = [command argumentAtIndex:0];
@@ -773,6 +908,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
 
     if ((audioFile != nil) && (audioFile.recorder != nil)) {
         NSLog(@"Stopped recording audio sample '%@'", audioFile.resourcePath);
+        [audioFile.recorder.recordTimer invalidate];
         [audioFile.recorder stop];
         // no callback - that will happen in audioRecorderDidFinishRecording
     }
@@ -1006,5 +1142,6 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
 
 @implementation CDVAudioRecorder
 @synthesize mediaId;
+@synthesize recordTimer;
 
 @end
